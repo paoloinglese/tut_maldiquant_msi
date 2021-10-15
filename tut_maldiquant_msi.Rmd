@@ -1,0 +1,235 @@
+---
+title: "Preprocessing MSI data using MALDIquant"
+author: "Paolo Inglese"
+date: "15/10/2021"
+output: html_document
+
+bibliography: ['refs.bib']
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## About
+
+In this short tutorial, I will show how to preprocess mass spectrometry imaging (MSI) data
+using [```MALDIquant```](https://cran.r-project.org/package=MALDIquant) [@MALDIquant], [```MALDIquantForeign```](https://cran.r-project.org/package=MALDIquantForeign)
+
+First load the required packages:
+
+```{r packages}
+library(MALDIquant)
+library(MALDIquantForeign)
+library(irlba)
+library(viridis)
+```
+
+## Importing ImzML
+
+For this tutorial, I will use a MALDI-MSI dataset `EY_210930pm_EDI-27jul21_p56-Male-642-12-6-T_50um_2SE` collected from a mouse brain in positive ion mode.  
+The dataset is publicly available on [METASPACE2020](https://metaspace2020.eu/) (*thanks to Eylan Yutuc for sharing it online*).
+
+We call the function ```importImzML``` from ```MALDIquant``` to load the MSI dataset ```imzML``` file.  
+The dataset is in centroided mode, so we will set the option (```centroided = TRUE```). This operation usually takes few minutes,
+depending on the dataset size.
+
+```{r load}
+peaks <- importImzMl('EY_210930pm_EDI-27jul21_p56-Male-642-12-6-T_50um_2SE.imzML', centroided = TRUE, verbose = FALSE)
+```
+
+Some details about the dataset 
+
+```{r details}
+# Total number of pixels
+print(length(peaks))
+
+# Spatial dimensions (same metadata for all pixels)
+print(peaks[[1]]@metaData$imaging$size)
+```
+
+Let's have a look at the distribution of the number of detected peaks and pixels mean intensities (in the log-space):
+
+```{r}
+
+n.peaks <- unlist(lapply(peaks, function(x) length(mass(x))))
+
+hist(n.peaks)
+
+mu.peaks <- unlist(lapply(peaks, function(x) mean(intensity(x))))
+
+hist(log1p(mu.peaks))
+
+```
+
+We can check that we have a set of MS peaks (class ```MassPeaks```):
+
+```{r class}
+print(class(peaks[[1]]))
+```
+
+and plot the peaks from one pixel:
+
+```{r plot pixel}
+plot(peaks[[3000]])
+```
+
+# Total-ion-count (TIC) image
+
+A quick way to check the spatial properties of an MSI dataset is to plot the TIC image. In this image,
+each pixel represents its total peaks intensity:
+
+```{r tic}
+
+tic <- unlist(lapply(peaks, function(x) sum(intensity(x))))
+tic <- matrix(tic, peaks[[1]]@metaData$imaging$size)
+image(tic, col=viridis(64))
+title('TIC')
+
+```
+As you may notice, it is not very informative, although the section boundaries are barely visible.  
+Things are a bit clearer if we calculate the TIC of the log-transformed intensities:
+
+```{r tic.log}
+tic.log <- unlist(lapply(peaks, function(x) sum(log1p(intensity(x)))))
+tic.log <- matrix(tic.log, peaks[[1]]@metaData$imaging$size)
+image(tic.log, col=viridis(64))
+title('TIC (log)')
+```
+## Peak binning (or peak matching)
+
+After quick checking some details of the dataset, we can start processing it. The first step is
+matching the peaks across all pixels. In this way, we assign the peaks intensities to a set of
+common masses, based on the similarity of their original values.  
+This can be done by calling the function ```binPeaks``` from ```MALDIquant```. We save the new
+masses in the same list of ```MassPeaks``` (NOTE: this procedure will overwrite the original masses,
+so if you want to keep them, you have to export the results in a different list).  
+
+We will use the 'strict' method, and a tolerance of 20 ppm:
+
+```{r bin}
+
+# binPeaks tolerance is expressed in delta mass / mass, we want it in ppm:
+tol.ppm <- 20
+tol.maldiquant <- tol.ppm / 1e6
+
+# The new common masses will overwrite the original ones. The intensities remain unmodified
+peaks <- binPeaks(peaks, method = 'strict', tolerance = tol.maldiquant)
+```
+
+### Intensity matrix (feature)
+
+To perform downstream analysis we need the so-called intensity matrix (or feature matrix),
+representing the intensities of all peaks assigned to the common masses. This matrix has a shape
+_npixels_ x _nfeatures_ and it's generated using the function ```intensityMatrix``` from ```MALDIquant```.
+
+*NOTE*: depending on the dataset, this matrix can be very big, so large amount of RAM may be necessary
+
+```{r features}
+# This can occupy a lot of RAM
+X <- intensityMatrix(peaks)
+```
+
+*NOTE*: ```MALDIquant``` sets the unassigned values to ```NA```. You may need to convert them to 0
+for downstream analysis.
+
+In this case, we have a whooping number of common masses equal to:
+
+```{r}
+# most of the common masses represent noise!
+ncol(X)
+```
+
+Most of these features are noise, as we can see from their assignment frequency:
+
+```{r}
+# Unfortunately my computer doesn't have enough RAM to run apply
+nz <- array(0, ncol(X))
+for (i in 1:ncol(X)) nz[i] <- sum(!is.na(X[, i]))
+```
+
+```{r}
+
+summary(nz / nrow(X))
+
+plot(seq(0, 1, 0.01), sapply(seq(0, 1, 0.01), function(x) sum(nz / nrow(X) > x) / length(nz)),
+     xlab = 'Freq. threshold',
+     ylab = 'Fraction of kept masses', type = 'b')
+```
+As we can see, less than 10% of the common masses are detected in more than 1% of the pixels.
+
+We can set 5% as a threshold to remove the _rare_ features (this is quite arbitrary and now based on memory constraints)
+
+```{r}
+keep.mass <- which(nz > nrow(X) * 0.05)
+X <- X[, keep.mass]
+
+dim(X)
+```
+
+We now have 4,871 features which looks more reasonable than > 100,000.
+
+*NOTE*: let's covert the ```NA``` to 0.
+
+```{r}
+X[is.na(X)] <- 0
+```
+
+## Normalization and log-transformation
+
+We can now normalize the intensities to take into account of the pixel-to-pixel variations.  
+To do so, we use TIC scaling. Also we apply a log-transformation to reduce the skeweness of the intensity distributions.
+
+```{r}
+
+scaling.factor <- apply(X, 1, sum)
+X <- X / scaling.factor
+
+# Be sure that the empty pixels are set to 0
+X[scaling.factor == 0, ] <- 0
+
+X <- log1p(X)
+
+```
+
+## How the data looks like?
+
+A quick way to check the global molecular heterogeneity of the sample is based on plotting
+the first 3 principal components (PC) as RGB channels. We use [```irlba```](https://cran.r-project.org/package=irlba) to quickly extract the
+first 3 PC:
+
+```{r}
+
+results <- irlba::prcomp_irlba(X, center = TRUE, scale. = TRUE, n = 3)
+
+```
+
+```{r}
+
+# First rescale the scores in [0, 1]
+pc <- apply(results$x, 2, function(x) (x - min(x)) / (max(x) - min(x)))
+
+# Create the RGB
+im <- rgb(pc[, 1], pc[, 2], pc[, 3])
+
+im <- matrix(im, peaks[[1]]@metaData$imaging$size)
+# Plot the image as a raster (transpose before)
+plot(as.raster(t(im)), interpolate = FALSE)
+
+```
+
+The image shows some degree of heterogeneity of the tissue, and its difference from the off-tissue region.
+
+## Ready for downstream analysis
+
+Now that we have the preprocessed intensity matrix, we can perform downstream analysis,
+such as supervised classification, clustering, etc.
+
+In this tutorial, we have used a basic filtering approach to reduce the number of common
+masses. More sophisticated methods based on the spatial information are available, such as 
+[```SPUTNIK```](https://cran.r-project.org/package=SPUTNIK) [@10.1093/bioinformatics/bty622]
+
+
+```{r session info}
+sessionInfo()
+```
