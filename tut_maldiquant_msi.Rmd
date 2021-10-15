@@ -2,8 +2,9 @@
 title: "Preprocessing MSI data using MALDIquant"
 author: "Paolo Inglese"
 date: "15/10/2021"
-output: html_document
-
+output: 
+  html_document: 
+    theme: readable
 bibliography: ['refs.bib']
 ---
 
@@ -87,6 +88,7 @@ image(tic, col=viridis(64))
 title('TIC')
 
 ```
+
 As you may notice, it is not very informative, although the section boundaries are barely visible.  
 Things are a bit clearer if we calculate the TIC of the log-transformed intensities:
 
@@ -96,9 +98,10 @@ tic.log <- matrix(tic.log, peaks[[1]]@metaData$imaging$size)
 image(tic.log, col=viridis(64))
 title('TIC (log)')
 ```
+
 ## Peak binning (or peak matching)
 
-After quick checking some details of the dataset, we can start processing it. The first step is
+After quickly checking some details of the dataset, we can start processing it. The first step is
 matching the peaks across all pixels. In this way, we assign the peaks intensities to a set of
 common masses, based on the similarity of their original values.  
 This can be done by calling the function ```binPeaks``` from ```MALDIquant```. We save the new
@@ -168,6 +171,19 @@ dim(X)
 ```
 
 We now have 4,871 features which looks more reasonable than > 100,000.
+
+_Where are my masses?_
+
+The common masses are saved as column names of the intensity matrix
+
+```{r}
+
+common.masses <- as.numeric(colnames(X))
+
+print(common.masses[1:20])
+
+```
+
 
 *NOTE*: let's covert the ```NA``` to 0.
 
