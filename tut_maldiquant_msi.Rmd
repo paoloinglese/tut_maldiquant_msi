@@ -49,6 +49,43 @@ print(length(peaks))
 print(peaks[[1]]@metaData$imaging$size)
 ```
 
+***NOTE***: The following code expects the spectra to be acquired ***row-wise*** ***left-to-right***.
+This small function can reorder the `peaks` list elements in case they were acquired with a
+different pattern:
+
+```{r px order}
+
+orderPixels <- function(peaks) {
+  
+  require(MALDIquant)
+  
+  coords <- coordinates(peaks)
+  
+  ord <- c()
+  for (y in sort(unique(coords[, 2]))) {
+    curr.y <- which(coords[, 2] == y)
+    ord <- c(ord, curr.y[order(coords[curr.y, 1])])
+  }
+  
+  return(ord)
+  
+}
+
+px.ord <- orderPixels(peaks)
+```
+
+In this case, the order remains unchanged, since the spectra were already acquired in the expected order:
+
+```{r check order}
+px.ord[1:10]
+
+max(diff(px.ord))  # The max difference between two consecutive pixels order is 1, because it's identical to the original order
+
+# To reorder the peaks
+
+peaks <- peaks[px.ord]
+```
+
 Let's have a look at the distribution of the number of detected peaks and pixels mean intensities (in the log-space):
 
 ```{r}
@@ -249,3 +286,4 @@ masses. More sophisticated methods based on the spatial information are availabl
 ```{r session info}
 sessionInfo()
 ```
+
